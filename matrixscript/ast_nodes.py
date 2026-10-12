@@ -24,6 +24,7 @@ class Var:
     name: str
     line: int
     column: int
+    size: tuple = None   # (rows, cols) - filled in later by the semantic analyzer
 
 
 @dataclass
@@ -33,6 +34,7 @@ class BinOp:
     right: object    # a Var or another BinOp
     line: int        # position of the operator itself (used in error carets)
     column: int
+    size: tuple = None   # (rows, cols) of the result - filled in by the semantic analyzer
 
 
 # --------------------------- statements ------------------------------------

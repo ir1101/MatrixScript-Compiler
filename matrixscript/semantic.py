@@ -40,7 +40,8 @@ class Check:
     """One line of the semantic check log."""
     line: int
     ok: bool
-    text: str      # e.g. "A.cols (3) = B.rows (3)"
+    text: str              # e.g. "A.cols (3) = B.rows (3)"
+    detail: dict = None    # operand names and sizes, used by the GUI to draw the check
 
 
 class SemanticAnalyzer:
@@ -51,8 +52,8 @@ class SemanticAnalyzer:
         self.errors = []
 
     # -- helpers ------------------------------------------------------------
-    def log(self, line, ok, text):
-        self.checks.append(Check(line, ok, text))
+    def log(self, line, ok, text, detail=None):
+        self.checks.append(Check(line, ok, text, detail))
 
     def fail(self, line, column, message, hint=""):
         return MatrixScriptError(PHASE_SEMANTIC, line, column, message, hint)
@@ -134,7 +135,8 @@ class SemanticAnalyzer:
         rows, cols = self.size_of(a.expr)            # size of the right-hand side
 
         if (rows, cols) != (target.rows, target.cols):
-            self.log(a.line, False, f"result {rows}x{cols} fits {a.target} ({target.rows}x{target.cols})")
+            self.log(a.line, False, f"result {rows}x{cols} fits {a.target} ({target.rows}x{target.cols})",
+                     detail("=", a.target, expr_to_text(a.expr), (target.rows, target.cols), (rows, cols), None))
             raise self.fail(
                 a.line, a.column,
                 f"Cannot store a {rows}x{cols} result in '{a.target}', "
@@ -142,7 +144,8 @@ class SemanticAnalyzer:
                 f"Declare it as  matrix {a.target}[{rows}][{cols}]  or change the "
                 f"expression so it produces a {target.rows}x{target.cols} matrix.",
             )
-        self.log(a.line, True, f"result {rows}x{cols} fits {a.target} ({target.rows}x{target.cols})")
+        self.log(a.line, True, f"result {rows}x{cols} fits {a.target} ({target.rows}x{target.cols})",
+                 detail("=", a.target, expr_to_text(a.expr), (target.rows, target.cols), (rows, cols), (rows, cols)))
 
     def size_of(self, node):
         """Work out (rows, cols) of an expression, checking every operator on the way.
@@ -152,21 +155,25 @@ class SemanticAnalyzer:
         """
         if isinstance(node, Var):
             symbol = self.lookup(node.name, node.line, node.column)
-            return symbol.rows, symbol.cols
+            node.size = (symbol.rows, symbol.cols)          # annotate the tree
+            return node.size
 
         left_size = self.size_of(node.left)
         right_size = self.size_of(node.right)
         left, right = operand_text(node.left), operand_text(node.right)
 
         if node.op == "+":
-            return self.check_addition(node, left, right, left_size, right_size)
-        return self.check_multiplication(node, left, right, left_size, right_size)
+            node.size = self.check_addition(node, left, right, left_size, right_size)
+        else:
+            node.size = self.check_multiplication(node, left, right, left_size, right_size)
+        return node.size                                    # annotate the tree
 
     def check_addition(self, node, left, right, lsize, rsize):
         """Rule for +  : both sides must have exactly the same size."""
         (lrows, lcols), (rrows, rcols) = lsize, rsize
         if lsize != rsize:
-            self.log(node.line, False, f"{left} + {right}: sizes differ ({lrows}x{lcols} vs {rrows}x{rcols})")
+            self.log(node.line, False, f"{left} + {right}: sizes differ ({lrows}x{lcols} vs {rrows}x{rcols})",
+                     detail(node.op, left, right, lsize, rsize, None))
             raise self.fail(
                 node.line, node.column,
                 f"Cannot add {left} ({lrows}x{lcols}) and {right} ({rrows}x{rcols}): "
@@ -174,14 +181,16 @@ class SemanticAnalyzer:
                 f"Make both operands the same size, for example declare both as "
                 f"[{lrows}][{lcols}].",
             )
-        self.log(node.line, True, f"{left} + {right}: both are {lrows}x{lcols}, so the result is {lrows}x{lcols}")
+        self.log(node.line, True, f"{left} + {right}: both are {lrows}x{lcols}, so the result is {lrows}x{lcols}",
+                 detail(node.op, left, right, lsize, rsize, lsize))
         return lsize
 
     def check_multiplication(self, node, left, right, lsize, rsize):
         """Rule for *  : columns of the left side must equal rows of the right side."""
         (lrows, lcols), (rrows, rcols) = lsize, rsize
         if lcols != rrows:
-            self.log(node.line, False, f"{left} * {right}: {left}.cols ({lcols}) is not equal to {right}.rows ({rrows})")
+            self.log(node.line, False, f"{left} * {right}: {left}.cols ({lcols}) is not equal to {right}.rows ({rrows})",
+                     detail(node.op, left, right, lsize, rsize, None))
             hint = (f"For {left} * {right}, the number of COLUMNS of the left matrix "
                     f"must equal the number of ROWS of the right matrix. "
                     f"Here the left has {lcols} columns but the right has {rrows} rows.")
@@ -193,8 +202,15 @@ class SemanticAnalyzer:
                 f"{left} has {lcols} columns but {right} has {rrows} rows.",
                 hint,
             )
-        self.log(node.line, True, f"{left} * {right}: {left}.cols ({lcols}) equals {right}.rows ({rrows}), so the result is {lrows}x{rcols}")
+        self.log(node.line, True, f"{left} * {right}: {left}.cols ({lcols}) equals {right}.rows ({rrows}), so the result is {lrows}x{rcols}",
+                 detail(node.op, left, right, lsize, rsize, (lrows, rcols)))
         return lrows, rcols
+
+
+def detail(op, left, right, left_size, right_size, result_size):
+    """Structured version of a check, so the GUI can draw the matrix shapes."""
+    return {"op": op, "left": left, "right": right,
+            "left_size": left_size, "right_size": right_size, "result_size": result_size}
 
 
 def operand_text(node):
